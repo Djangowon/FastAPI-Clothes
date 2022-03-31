@@ -8,6 +8,7 @@ import sqlalchemy
 from email_validator import validate_email as validate_e, EmailNotValidError
 from pydantic import BaseModel, validator
 from fastapi import FastAPI
+from passlib.context import CryptContext
 
 DB_USER = os.environ['USER']
 DB_PASS = os.environ['PASSWORD']
@@ -111,6 +112,7 @@ class UserSignOut(BaseUser):
 
 
 app = FastAPI()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 @app.on_event("startup")
@@ -125,6 +127,7 @@ async def shutdown():
 
 @app.post("/register/", response_model=UserSignOut)
 async def create_user(user: UserSignIn):
+    user.password = pwd_context.hash(user.password)
     q = users.insert().values(**user.dict())
     id_ = await database.execute(q)
     created_user = await database.fetch_one(users.select().where(users.c.id == id_))
