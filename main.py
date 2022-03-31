@@ -1,4 +1,6 @@
 import os
+from datetime import datetime
+from typing import Optional
 
 import databases
 import enum
@@ -87,18 +89,25 @@ class EmailField(str):
 
 class BaseUser(BaseModel):
     email: EmailField
-    full_name: str
+    full_name: Optional[str]
 
     @validator("full_name")
     def validate_full_name(cls, v):
         try:
             first_name, last_name = v.split()
+            return v
         except Exception:
             raise ValueError("You should provide at least 2 names")
 
 
 class UserSignIn(BaseUser):
     password: str
+
+
+class UserSignOut(BaseUser):
+    phone: Optional[str]
+    created_at: datetime
+    last_modified_at: datetime
 
 
 app = FastAPI()
@@ -114,9 +123,10 @@ async def shutdown():
     await database.disconnect()
 
 
-@app.post("/register/")
+@app.post("/register/", response_model=UserSignOut)
 async def create_user(user: UserSignIn):
     q = users.insert().values(**user.dict())
     id_ = await database.execute(q)
-    return
+    created_user = await database.fetch_one(users.select().where(users.c.id == id_))
+    return created_user
 
