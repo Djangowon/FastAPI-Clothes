@@ -1,17 +1,22 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import databases
 import enum
+
+import jwt
 import sqlalchemy
 from email_validator import validate_email as validate_e, EmailNotValidError
 from pydantic import BaseModel, validator
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from passlib.context import CryptContext
+from starlette.requests import Request
 
 DB_USER = os.environ['USER']
 DB_PASS = os.environ['PASSWORD']
+SECRET_KEY = os.environ['SECRET_KEY']
 
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@localhost:5432/clothes"
@@ -115,6 +120,31 @@ app = FastAPI()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+class CustomHTTPBearer(HTTPBearer):
+    async def __call__(
+            self, request: Request
+    ) -> Optional[HTTPAuthorizationCredentials]:
+        res = await super().__call__(request)
+
+        try:
+            payload = jwt.decode(res.credentials, SECRET_KEY, algorithms=["HS256"])
+            user = await database.fetch_one(users.select().where(users.c.id == payload["sub"]))
+            request.state.user = user
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(401, "Token is expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(401, "Invalid token")
+
+
+def create_access_token(user):
+    try:
+        payload = {"sub": user["id"], "exp": datetime.utcnow() + timedelta(minutes=120)}
+        return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    except Exception as ex:
+        raise ex
+
+
 @app.on_event("startup")
 async def startup():
     await database.connect()
@@ -125,11 +155,12 @@ async def shutdown():
     await database.disconnect()
 
 
-@app.post("/register/", response_model=UserSignOut)
+@app.post("/register/")
 async def create_user(user: UserSignIn):
     user.password = pwd_context.hash(user.password)
     q = users.insert().values(**user.dict())
     id_ = await database.execute(q)
     created_user = await database.fetch_one(users.select().where(users.c.id == id_))
-    return created_user
+    token = create_access_token(created_user)
+    return {"token": token}
 
