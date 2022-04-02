@@ -9,7 +9,7 @@ import jwt
 import sqlalchemy
 from email_validator import validate_email as validate_e, EmailNotValidError
 from pydantic import BaseModel, validator
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from passlib.context import CryptContext
 from starlette.requests import Request
@@ -24,6 +24,13 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@localhost:5432/clothes"
 database = databases.Database(DATABASE_URL)
 
 metadata = sqlalchemy.MetaData()
+
+
+class UserRole(enum.Enum):
+    super_admin = "super admin"
+    admin = "admin"
+    user = "user"
+
 
 users = sqlalchemy.Table(
     "users",
@@ -41,6 +48,7 @@ users = sqlalchemy.Table(
         server_default=sqlalchemy.func.now(),
         onupdate=sqlalchemy.func.now(),
     ),
+    sqlalchemy.Column("role", sqlalchemy.Enum(UserRole), nullable=False, server_default=UserRole.user.name)
 )
 
 
@@ -137,6 +145,16 @@ class CustomHTTPBearer(HTTPBearer):
             raise HTTPException(401, "Invalid token")
 
 
+oauth2_schema = CustomHTTPBearer()
+
+
+def is_admin(request: Request):
+
+    user = request.state.user
+    if not user or user["role"] not in (UserRole.admin, UserRole.super_admin):
+        raise HTTPException(403, "You do not have permissions for this resource")
+
+
 def create_access_token(user):
     try:
         payload = {"sub": user["id"], "exp": datetime.utcnow() + timedelta(minutes=120)}
@@ -155,7 +173,41 @@ async def shutdown():
     await database.disconnect()
 
 
-@app.post("/register/")
+@app.get("/clothes/", dependencies=[Depends(oauth2_schema)])
+async def get_all_clothes(request: Request):
+    user = request.state.user
+    return await database.fetch_all(clothes.select())
+
+
+class ClothesBase(BaseModel):
+    name: str
+    color: str
+    size: SizeEnum
+    color: ColorEnum
+
+
+class ClothesIn(ClothesBase):
+    pass
+
+
+class ClothesOut(ClothesBase):
+    id: int
+    created_at: datetime
+    last_modified_at: datetime
+
+
+@app.post("/clothes/",
+          response_model=ClothesOut,
+          dependencies=[Depends(oauth2_schema),
+                        Depends(is_admin)],
+          status_code=201
+          )
+async def create_clothes(clothes_data: ClothesIn):
+    id_ = await database.execute(clothes.insert().values(**clothes_data.dict()))
+    return await database.fetch_one(clothes.select().where(clothes.c.id == id_))
+
+
+@app.post("/register/", status_code=201)
 async def create_user(user: UserSignIn):
     user.password = pwd_context.hash(user.password)
     q = users.insert().values(**user.dict())
